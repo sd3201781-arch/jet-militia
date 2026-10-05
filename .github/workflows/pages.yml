@@ -1,0 +1,71 @@
+name: Deploy to GitHub Pages
+
+# Stage 5 of the plan: deploy the built client.
+#
+# The site is published straight from the CI-built artifact (never from a raw
+# branch checkout), so the URL always serves exactly what the pipeline passed —
+# tests, asset validation and size budget included.
+#
+# Requires Pages to be configured with build_type = "workflow"
+# (Settings → Pages → Source: GitHub Actions), which the repo setup does for you.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests (gate)
+        run: npm run test:unit
+
+      - name: Build
+        run: npm run build
+
+      - name: Validate assets
+        run: npm run validate
+
+      - name: Enforce size budget
+        run: npm run size
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
