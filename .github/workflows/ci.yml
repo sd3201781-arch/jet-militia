@@ -1,0 +1,164 @@
+name: CI
+
+# Stages: lint (syntax) → unit tests → build → asset validation → size budget → security.
+# Matches §2 of the Jet Militia CI/CD plan. All stages are blocking.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ─────────────────────────────── 1. LINT / STATIC ANALYSIS ───────────────────────────────
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Syntax-check every client module
+        run: |
+          set -e
+          for f in apps/client/*.js; do
+            case "$f" in
+              *peerjs.min.js) continue ;;   # vendored, not ours
+            esac
+            echo "node --check $f"
+            node --check "$f"
+          done
+
+      - name: Validate package.json + workflow YAML are well-formed
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json OK')"
+          for f in .github/workflows/*.yml; do
+            node -e "
+              const fs=require('fs');
+              const t=fs.readFileSync('$f','utf8');
+              if(!/^name:/m.test(t)) { console.error('missing name in $f'); process.exit(1); }
+              console.log('$f OK');
+            "
+          done
+
+      - name: Guard against committed secrets
+        run: |
+          if grep -rIn -e 'BEGIN RSA PRIVATE KEY' -e 'BEGIN OPENSSH PRIVATE KEY' -e 'ghp_' -e 'github_pat_' -e 'AKIA' apps scripts .github package.json 2>/dev/null; then
+            echo "::error::Possible hardcoded secret detected"
+            exit 1
+          fi
+          echo "No hardcoded secrets found."
+
+  # ────────────────────────────────────── 2. UNIT TESTS ────────────────────────────────────
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Run unit tests (Node's built-in test runner)
+        run: npm run test:unit
+
+  # ───────────────────────────────────────── 3. BUILD ──────────────────────────────────────
+  build:
+    name: build
+    needs: [lint, unit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Build the client
+        run: npm run build
+
+      - name: Validate assets (catch 404s before players do)
+        run: npm run validate
+
+      - name: Enforce size budget
+        run: npm run size
+
+      - name: Show build metadata
+        run: cat _site/build-meta.json
+
+      - name: Upload deployable client
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-site
+          path: _site/
+          retention-days: 30
+
+  # ───────────────────────────────────── 4. SECURITY ───────────────────────────────────────
+  security:
+    name: security
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Dependency audit (high / critical block)
+        run: npm audit --audit-level=high
+
+      - name: Secrets scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SAST (CodeQL init)
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - name: SAST (CodeQL analyze)
+        uses: github/codeql-action/analyze@v3
+
+      - name: Software bill of materials (CycloneDX)
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json
+        continue-on-error: true
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          if-no-files-found: ignore
+          retention-days: 365
