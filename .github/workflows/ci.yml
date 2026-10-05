@@ -54,13 +54,21 @@ jobs:
             "
           done
 
+      # Fast fail-fast scan of the surface that actually ships. The repo-wide
+      # scan (history included, .github included) is gitleaks' job in the
+      # security stage — it runs after this and covers what this step skips.
       - name: Guard against committed secrets
         run: |
-          if grep -rIn -e 'BEGIN RSA PRIVATE KEY' -e 'BEGIN OPENSSH PRIVATE KEY' -e 'ghp_' -e 'github_pat_' -e 'AKIA' apps scripts .github package.json 2>/dev/null; then
-            echo "::error::Possible hardcoded secret detected"
+          set -e
+          if grep -rInE '(ghp|github_pat|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}' apps scripts package.json; then
+            echo "::error::Possible hardcoded GitHub token in app source"
             exit 1
           fi
-          echo "No hardcoded secrets found."
+          if grep -rIn 'BEGIN [A-Z ]*PRIVATE KEY' apps scripts package.json; then
+            echo "::error::Possible hardcoded private key in app source"
+            exit 1
+          fi
+          echo "No hardcoded secrets found in the shipping surface."
 
   # ────────────────────────────────────── 2. UNIT TESTS ────────────────────────────────────
   unit:
@@ -136,7 +144,7 @@ jobs:
       - name: Dependency audit (high / critical block)
         run: npm audit --audit-level=high
 
-      - name: Secrets scan (gitleaks)
+      - name: Secrets scan (gitleaks, whole repo + history)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
