@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Jet Militia — 2D Jetpack Arena Shooter</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===================== LOBBY ===================== -->
+  <div id="lobby">
+    <div class="card">
+      <div class="logo">JET&nbsp;MILITIA</div>
+      <div class="tagline">2D JETPACK ARENA SHOOTER · ONLINE MULTIPLAYER</div>
+
+      <div class="field">
+        <label>Your callsign</label>
+        <input type="text" id="nameInput" maxlength="12" placeholder="Player" value="">
+      </div>
+
+      <div class="field">
+        <label>Your colour</label>
+        <div class="colors" id="colorRow"></div>
+      </div>
+
+      <button class="btn" id="btnSolo">▶ PLAY SOLO (vs bots-free arena)</button>
+
+      <div class="divider">— ONLINE MULTIPLAYER —</div>
+
+      <button class="btn alt" id="btnHost">🛰 HOST A ROOM</button>
+
+      <div class="field" style="margin-top:14px">
+        <label>Join with a room code</label>
+        <div class="codebox">
+          <input type="text" id="joinCode" maxlength="6" placeholder="ABC123">
+          <button class="btn small" id="btnJoin" style="width:auto;margin:0;padding:12px 18px">JOIN</button>
+        </div>
+      </div>
+
+      <div class="status" id="status"></div>
+
+      <!-- host panel -->
+      <div id="hostPanel" class="hidden">
+        <div class="divider">ROOM READY — SHARE THIS CODE</div>
+        <div class="roomcode" id="roomCode">------</div>
+        <div class="row">
+          <button class="btn small ghost" id="btnCopyCode">📋 COPY CODE</button>
+          <button class="btn small ghost" id="btnCopyLink">🔗 COPY INVITE LINK</button>
+        </div>
+        <div class="hint">Friends open the link (or enter the code) to drop straight into your match. Up to 6 players.</div>
+        <button class="btn" id="btnStartHost" style="margin-top:14px">▶ START MATCH</button>
+      </div>
+
+      <details>
+        <summary>⚙ Advanced: manual WebRTC (1v1, if the broker is blocked)</summary>
+        <div class="hint">Use this only if room codes fail. Host creates an offer, sends it to a friend; the friend pastes it, returns the answer.</div>
+        <button class="btn small ghost" id="btnManualHost" style="margin-top:8px">Create offer (host)</button>
+        <textarea id="manualOffer" placeholder="Offer / Answer text appears here — copy &amp; send it"></textarea>
+        <button class="btn small ghost" id="btnManualAnswer">Paste answer (host)</button>
+        <div class="divider">OR</div>
+        <textarea id="manualPaste" placeholder="Paste the host's offer here"></textarea>
+        <button class="btn small ghost" id="btnManualJoin">Accept offer (join)</button>
+      </details>
+
+      <div class="hint" style="margin-top:16px">
+        <b>Controls:</b> A/D or ←/→ move · W/↑/Space jetpack · mouse aim · click shoot · 1/2/3 or Q weapons · R reload · B background · Tab scores.<br>
+        <b>Mobile:</b> left thumb = move + jetpack, right thumb = aim + fire.
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== GAME ===================== -->
+  <div id="game" class="hidden">
+    <canvas id="cv"></canvas>
+    <div id="topbar">
+      <div class="pill" id="btnMenu">☰ MENU</div>
+      <div class="pill" id="btnSound">🔊 SOUND</div>
+      <div class="pill" id="btnScores">🏆 SCORES</div>
+      <div id="bgswitch"></div>
+    </div>
+    <div id="roomtag" class="hidden">ROOM <b id="roomtagCode">------</b> · <span id="roomtagPlayers">1</span> players</div>
+    <div id="toast"></div>
+    <div id="mobhint">left thumb: move + jetpack &nbsp;·&nbsp; right thumb: aim + fire</div>
+  </div>
+
+</div>
+
+<script src="peerjs.min.js"></script>
+<script src="backgrounds.js"></script>
+<script src="audio.js"></script>
+<script src="net.js"></script>
+<script src="game.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const COLORS = window.GAME_COLORS;
+  let myColor = COLORS[0];
+  let net = null;
+  let game = null;
+
+  /* ---------- lobby: colour swatches ---------- */
+  const colorRow = $('colorRow');
+  COLORS.forEach((c, i) => {
+    const d = document.createElement('div');
+    d.className = 'swatch' + (i === 0 ? ' sel' : '');
+    d.style.background = c; d.style.color = c;
+    d.onclick = () => {
+      myColor = c;
+      [...colorRow.children].forEach(x => x.classList.remove('sel'));
+      d.classList.add('sel');
+      window.SFX.init(); window.SFX.resume(); window.SFX.ui();
+    };
+    colorRow.appendChild(d);
+  });
+
+  /* ---------- lobby: background swatches ---------- */
+  const bgswitch = $('bgswitch');
+  window.BACKGROUNDS.forEach(b => {
+    const d = document.createElement('div');
+    d.className = 'bgbtn' + (b.id === 'inferno' ? ' sel' : '');
+    d.style.background = b.swatch; d.style.color = b.swatch;
+    d.title = b.name;
+    d.dataset.bg = b.id;
+    d.onclick = () => {
+      if (game) game.setBg(b.id);
+      [...bgswitch.children].forEach(x => x.classList.remove('sel'));
+      d.classList.add('sel');
+      toast('Background: ' + b.name);
+    };
+    bgswitch.appendChild(d);
+  });
+
+  /* ---------- helpers ---------- */
+  function status(msg, kind) {
+    const s = $('status');
+    s.textContent = msg; s.className = 'status show ' + (kind || 'info');
+  }
+  function hideStatus() { $('status').className = 'status'; }
+  let toastT = null;
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+  function randomCode() {
+    const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let s = ''; for (let i = 0; i < 6; i++) s += A[(Math.random() * A.length) | 0];
+    return s;
+  }
+  function myName() { return ($('nameInput').value || 'Player').slice(0, 12); }
+
+  /* ---------- start the game ---------- */
+  function startGame(mode, opts) {
+    opts = opts || {};
+    $('lobby').classList.add('hidden');
+    $('game').classList.remove('hidden');
+    window.SFX.init(); window.SFX.resume();
+
+    game = window.Game;
+    game.init($('cv'), {
+      net: net, mode: mode, name: myName(), color: myColor, bg: opts.bg || 'inferno'
+    });
+    window.Game._hud = updateRoomTag;
+
+    if (net && net.mode !== 'solo') {
+      $('roomtag').classList.remove('hidden');
+      $('roomtagCode').textContent = net.roomCode || '—';
+      updateRoomTag();
+    }
+    // sync bg swatch selection
+    [...bgswitch.children].forEach(x => x.classList.toggle('sel', x.dataset.bg === game.bgId));
+  }
+  function updateRoomTag() {
+    if (!game) return;
+    $('roomtagPlayers').textContent = Object.keys(game.players).length;
+  }
+
+  /* ---------- SOLO ---------- */
+  $('btnSolo').onclick = () => {
+    window.SFX.init(); window.SFX.resume();
+    net = null;
+    startGame('solo', {});
+  };
+
+  /* ---------- HOST ---------- */
+  $('btnHost').onclick = () => {
+    window.SFX.init(); window.SFX.resume();
+    const code = randomCode();
+    net = window.Net; net.init(myName());
+    net.on({
+      onStatus: (s, extra) => {
+        if (s === 'connecting') status('Connecting to matchmaking broker…', 'info');
+        else if (s === 'hosting') {
+          status('Room is live! Share the code or link below.', 'ok');
+          $('hostPanel').classList.remove('hidden');
+          $('roomCode').textContent = code;
+        } else if (s === 'peer-joined') {
+          status('A player joined!', 'ok');
+          if (game) updateRoomTag();
+        } else if (s === 'peer-left') { if (game) updateRoomTag(); }
+        else if (s === 'error') status(extra.msg || 'Connection error', 'err');
+      },
+      onMessage: (from, msg) => { if (game) game.onNetMessage(from, msg); }
+    });
+    net.hostRoom(code);
+  };
+  $('btnCopyCode').onclick = () => {
+    const c = $('roomCode').textContent;
+    navigator.clipboard.writeText(c).then(() => toast('Room code copied!'));
+  };
+  $('btnCopyLink').onclick = () => {
+    const c = $('roomCode').textContent;
+    const url = location.origin + location.pathname + '?room=' + c;
+    navigator.clipboard.writeText(url).then(() => toast('Invite link copied!'));
+  };
+  $('btnStartHost').onclick = () => startGame('host', {});
+
+  /* ---------- JOIN ---------- */
+  $('btnJoin').onclick = () => {
+    const code = ($('joinCode').value || '').trim().toUpperCase();
+    if (code.length < 4) { status('Enter a valid room code.', 'err'); return; }
+    window.SFX.init(); window.SFX.resume();
+    net = window.Net; net.init(myName());
+    net.on({
+      onStatus: (s, extra) => {
+        if (s === 'connecting') status('Joining room ' + code + '…', 'info');
+        else if (s === 'connected') {
+          status('Connected! Waiting for the host to start…', 'ok');
+          net.send({ t: 'hello', name: myName(), color: myColor });
+          setTimeout(() => startGame('client', {}), 400);
+        } else if (s === 'error') status(extra.msg || 'Could not join.', 'err');
+        else if (s === 'disconnected') status('Disconnected from host.', 'err');
+      },
+      onMessage: (from, msg) => { if (game) game.onNetMessage(from, msg); }
+    });
+    net.joinRoom(code);
+  };
+  $('joinCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnJoin').click(); });
+
+  /* ---------- auto-join from ?room=CODE ---------- */
+  const params = new URLSearchParams(location.search);
+  if (params.get('room')) {
+    $('joinCode').value = params.get('room').toUpperCase();
+    status('Room code detected — press JOIN to enter.', 'info');
+  }
+
+  /* ---------- manual WebRTC ---------- */
+  $('btnManualHost').onclick = async () => {
+    net = window.Net; net.init(myName());
+    net.on({ onStatus: s => { if (s === 'hosting') status('Manual link open — start the match.', 'ok'); },
+             onMessage: (f, m) => { if (game) game.onNetMessage(f, m); } });
+    const offer = await net.manualCreateOffer();
+    $('manualOffer').value = offer;
+    status('Offer created — copy it to your friend.', 'ok');
+  };
+  $('btnManualAnswer').onclick = async () => {
+    await net.manualAcceptAnswer($('manualOffer').value);
+    status('Answer accepted — starting…', 'ok');
+    startGame('host', {});
+  };
+  $('btnManualJoin').onclick = async () => {
+    net = window.Net; net.init(myName());
+    net.on({ onStatus: s => { if (s === 'connected') { status('Connected!', 'ok'); startGame('client', {}); } },
+             onMessage: (f, m) => { if (game) game.onNetMessage(f, m); } });
+    const ans = await net.manualAcceptOffer($('manualPaste').value);
+    $('manualOffer').value = ans;
+    status('Answer created — copy it back to the host.', 'ok');
+  };
+
+  /* ---------- in-game buttons ---------- */
+  $('btnMenu').onclick = () => {
+    if (game) { game.running = false; }
+    if (net) net.close();
+    $('game').classList.add('hidden');
+    $('lobby').classList.remove('hidden');
+    $('hostPanel').classList.add('hidden');
+    $('roomtag').classList.add('hidden');
+    hideStatus();
+    game = null;
+  };
+  let soundOn = true;
+  $('btnSound').onclick = () => {
+    soundOn = !soundOn;
+    window.SFX.setEnabled(soundOn);
+    $('btnSound').textContent = soundOn ? '🔊 SOUND' : '🔇 MUTED';
+    $('btnSound').classList.toggle('on', soundOn);
+  };
+  $('btnScores').onclick = () => { if (game) game.showScores = !game.showScores; };
+
+  // prevent page scroll on space
+  window.addEventListener('keydown', e => { if (e.key === ' ') e.preventDefault(); });
+})();
+</script>
+</body>
+</html>
