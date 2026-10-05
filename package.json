@@ -1,0 +1,35 @@
+{
+  "name": "jet-militia",
+  "version": "1.0.0",
+  "description": "Jet Militia — a 2D online multiplayer jetpack arena shooter, built as a static web game with CI/CD.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "validate": "node scripts/validate-assets.mjs",
+    "size": "node scripts/size-budget.mjs",
+    "test:unit": "node --test apps/client/tests/",
+    "test": "npm run test:unit",
+    "ci": "npm run build && npm run validate && npm run size && npm run test:unit",
+    "start": "npm run build && node scripts/serve.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sd3201781-arch/jet-militia.git"
+  },
+  "keywords": [
+    "game",
+    "multiplayer",
+    "webrtc",
+    "peerjs",
+    "canvas",
+    "jetpack"
+  ],
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  }
+}
