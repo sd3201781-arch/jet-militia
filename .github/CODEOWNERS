@@ -1,0 +1,7 @@
+# CODEOWNERS — see the plan, §1.4.
+# The default owner reviews everything; sensitive paths can be narrowed here.
+*                       @sd3201781-arch
+
+/.github/               @sd3201781-arch
+/apps/client/net.js     @sd3201781-arch
+/scripts/               @sd3201781-arch
